@@ -207,7 +207,7 @@ export default function HiderInterface({ game }: HiderInterfaceProps) {
       // Create chat message
       const questionText = pendingQuestion.question?.question || 'Unknown question'
       const category = pendingQuestion.category || 'Unknown'
-      const answerText = correct ? 'Correct ✓' : 'Wrong ✗'
+      const answerText = correct ? 'Yes ✓' : 'No ✗'
       
       // Build chat message object, only include photoUrl if it exists
       const chatMessage: any = {
@@ -361,7 +361,21 @@ export default function HiderInterface({ game }: HiderInterfaceProps) {
             id="hiding-zone-circle"
             type="circle"
             paint={{
-              'circle-radius': 200, // Fixed pixel size (200px radius = 400px diameter)
+              // Fixed real-world size: 500 meters radius
+              // Convert meters to pixels: radius_pixels = radius_meters / meters_per_pixel
+              // At equator: meters_per_pixel = 156543.03392 / (2^zoom)
+              // For 500m radius: radius_pixels = 500 * (2^zoom) / 156543.03392
+              'circle-radius': [
+                'interpolate',
+                ['exponential', 2],
+                ['zoom'],
+                8, 0.82,    // 500m / (156543 / 256) = 500 * 256 / 156543 ≈ 0.82px
+                10, 3.27,   // 500m / (156543 / 1024) = 500 * 1024 / 156543 ≈ 3.27px
+                12, 13.1,   // 500m / (156543 / 4096) = 500 * 4096 / 156543 ≈ 13.1px
+                15, 104.7,  // 500m / (156543 / 32768) = 500 * 32768 / 156543 ≈ 104.7px
+                18, 837.8,  // 500m / (156543 / 262144) = 500 * 262144 / 156543 ≈ 837.8px
+                20, 3351     // 500m / (156543 / 1048576) = 500 * 1048576 / 156543 ≈ 3351px
+              ],
               'circle-color': 'rgba(255, 0, 0, 0.1)',
               'circle-stroke-color': 'rgba(255, 0, 0, 0.5)',
               'circle-stroke-width': 2,
@@ -521,25 +535,25 @@ export default function HiderInterface({ game }: HiderInterfaceProps) {
                 <button
                   type="button"
                   onClick={() => {
-                    console.log('Correct button clicked')
+                    console.log('Yes button clicked')
                     answerQuestion(true)
                   }}
                   disabled={uploadingPhoto || isAnsweringRef.current || (pendingQuestion.question?.type === 'photo' && !photoFile)}
                   className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {uploadingPhoto ? 'Uploading...' : pendingQuestion.question?.type === 'photo' ? 'Submit Photo' : 'Correct'}
+                  {uploadingPhoto ? 'Uploading...' : pendingQuestion.question?.type === 'photo' ? 'Submit Photo' : 'Yes'}
                 </button>
                 {pendingQuestion.question?.type !== 'photo' && (
                   <button
                     type="button"
                     onClick={() => {
-                      console.log('Wrong button clicked')
+                      console.log('No button clicked')
                       answerQuestion(false)
                     }}
                     disabled={uploadingPhoto || isAnsweringRef.current}
                     className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Wrong
+                    No
                   </button>
                 )}
               </div>
