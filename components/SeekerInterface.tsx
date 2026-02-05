@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react'
 import { doc, onSnapshot, updateDoc, collection, query, where, getDocs, getDoc } from 'firebase/firestore'
 import { db, auth } from '@/lib/firebase'
 import { Game, Curse, Question, ChatMessage } from '@/types/game'
-import Map, { Marker } from 'react-map-gl'
+import GoogleMapWrapper from './GoogleMapWrapper'
 import { MapPin, X, MessageSquare, HelpCircle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -17,7 +17,9 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
   const [activeCurse, setActiveCurse] = useState<Curse | null>(null)
   const [questions, setQuestions] = useState<Question[]>([])
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
-  const [mapboxToken] = useState(process.env.NEXT_PUBLIC_MAPBOX_TOKEN || '')
+  const [selectedQuestion, setSelectedQuestion] = useState<Question | null>(null)
+  const [availableQuestions, setAvailableQuestions] = useState<Question[]>([])
+  const [googleMapsApiKey] = useState(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '')
   const [showHiderLocation, setShowHiderLocation] = useState(false)
   const [currentGame, setCurrentGame] = useState<Game>(game)
   const [mapError, setMapError] = useState<string | null>(null)
@@ -25,7 +27,67 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
   const [questionsLoading, setQuestionsLoading] = useState(true)
   const [chatOpen, setChatOpen] = useState(false)
   const [questionsDrawerOpen, setQuestionsDrawerOpen] = useState(false)
+  const [lastSeenMessageCount, setLastSeenMessageCount] = useState(0)
   const chatEndRef = useRef<HTMLDivElement>(null)
+
+  // Load map settings from localStorage immediately (client-side only)
+  const loadMapSettings = () => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('mapSettings')
+      if (saved) {
+        try {
+          return JSON.parse(saved)
+        } catch (e) {
+          console.error('Error loading map settings:', e)
+        }
+      }
+    }
+    return null
+  }
+
+  const [mapSettings, setMapSettings] = useState<any>(loadMapSettings())
+
+  // Listen for localStorage changes and reload settings
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'mapSettings') {
+        if (e.newValue) {
+          try {
+            setMapSettings(JSON.parse(e.newValue))
+          } catch (error) {
+            console.error('Error parsing map settings:', error)
+          }
+        } else {
+          setMapSettings(null)
+        }
+      }
+    }
+
+    // Listen for storage events (from other tabs/windows)
+    window.addEventListener('storage', handleStorageChange)
+
+    // Also check for changes in the same tab (custom event)
+    const handleCustomStorageChange = () => {
+      const saved = localStorage.getItem('mapSettings')
+      if (saved) {
+        try {
+          setMapSettings(JSON.parse(saved))
+        } catch (error) {
+          console.error('Error parsing map settings:', error)
+        }
+      }
+    }
+
+    // Listen for custom event (when settings are applied in same tab)
+    window.addEventListener('mapSettingsUpdated', handleCustomStorageChange)
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange)
+      window.removeEventListener('mapSettingsUpdated', handleCustomStorageChange)
+    }
+  }, [])
 
   useEffect(() => {
     if (!db) return
@@ -34,7 +96,7 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
       if (!snapshot.exists()) return
       const gameData = { id: snapshot.id, ...snapshot.data() } as Game
       setCurrentGame(gameData)
-      
+
       const curses = gameData.activeCurses || []
       if (curses.length > 0) {
         setActiveCurse(curses[curses.length - 1])
@@ -99,6 +161,33 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
     loadQuestions()
   }, [])
 
+  useEffect(() => {
+    // Filter questions based on usedQuestionIds and game size
+    if (questions.length === 0) {
+      setAvailableQuestions([])
+      return
+    }
+
+    const usedIds = currentGame.usedQuestionIds || []
+    const gameSizeStr = currentGame.gameSize || 'small'
+
+    const filtered = questions.filter(q => {
+      // Filter out used questions
+      if (usedIds.includes(q.id)) return false
+
+      // Filter by game size
+      if (q.gameSize) {
+        if (q.gameSize === 'all') return true
+        if (q.gameSize.includes(gameSizeStr)) return true
+        return false
+      }
+
+      return true
+    })
+
+    setAvailableQuestions(filtered)
+  }, [questions, currentGame.usedQuestionIds, currentGame.gameSize])
+
   const updateSeekerLocation = async (loc: { lat: number; lng: number }) => {
     if (!db || !auth) return
     try {
@@ -139,11 +228,11 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
   }
 
   const getCategories = () => {
-    const categories = new Set(questions.map((q) => q.category))
+    const categories = new Set(availableQuestions.map((q) => q.category))
     return Array.from(categories)
   }
 
-  const sendQuestionRequest = async (category: string) => {
+  const sendQuestionRequest = async (question: Question) => {
     if (!db) {
       console.error('Firebase db is not initialized')
       return
@@ -153,34 +242,21 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
       const gameRef = doc(db, 'games', game.id)
       const gameSnapshot = await getDoc(gameRef)
       const currentGame = { id: gameSnapshot.id, ...gameSnapshot.data() } as Game
-      
+
       if (currentGame.pendingQuestion) {
         alert('Please wait for the current question to be answered before asking another one.')
         return
       }
-      
-      console.log('Sending question request for category:', category)
-      console.log('Available questions:', questions.length)
-      
-      const categoryQuestions = questions.filter((q) => q.category === category)
-      console.log('Category questions:', categoryQuestions.length)
-      
-      if (categoryQuestions.length === 0) {
-        console.warn(`No questions found for category: ${category}`)
-        alert(`No questions available in the ${category} category. Please seed questions.`)
-        return
-      }
 
-      const randomQuestion = categoryQuestions[Math.floor(Math.random() * categoryQuestions.length)]
-      console.log('Selected question:', randomQuestion)
-      
+      console.log('Sending question request:', question)
+
       // Create chat message for the question
       const chatMessage: ChatMessage = {
         id: Date.now().toString(),
         type: 'question',
-        content: randomQuestion.question,
-        question: randomQuestion.question,
-        category: category,
+        content: question.question,
+        question: question.question,
+        category: question.category,
         timestamp: new Date(),
         sender: 'seeker',
       }
@@ -188,34 +264,41 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
       const currentMessages = currentGame.chatMessages || []
       const updatedMessages = [...currentMessages, chatMessage]
 
+      // Add to used questions
+      const usedQuestionIds = currentGame.usedQuestionIds || []
+      const updatedUsedIds = [...usedQuestionIds, question.id]
+
       await updateDoc(gameRef, {
         pendingQuestion: {
-          category,
-          question: randomQuestion,
+          category: question.category,
+          question: question,
           timestamp: new Date(),
         },
         chatMessages: updatedMessages,
+        usedQuestionIds: updatedUsedIds
       })
 
       console.log('Question sent successfully')
       setSelectedCategory(null)
+      setSelectedQuestion(null)
+      setQuestionsDrawerOpen(false)
     } catch (error) {
       console.error('Error sending question request:', error)
       alert('Failed to send question. Check console for details.')
     }
   }
 
-  if (!mapboxToken) {
+  if (!googleMapsApiKey) {
     return (
       <div className="h-dvh w-screen flex items-center justify-center bg-gray-900 text-white p-4">
         <div className="text-center max-w-md">
           <MapPin className="w-12 h-12 mx-auto mb-4 text-red-400" />
-          <h2 className="text-xl font-bold mb-2">Mapbox Token Missing</h2>
+          <h2 className="text-xl font-bold mb-2">Google Maps API Key Missing</h2>
           <p className="text-gray-300 mb-4">
-            Please add NEXT_PUBLIC_MAPBOX_TOKEN to your .env.local file
+            Please add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to your .env.local file
           </p>
           <p className="text-sm text-gray-400">
-            Get your token from: https://account.mapbox.com/access-tokens/
+            Get your API key from: https://console.cloud.google.com/google/maps-apis
           </p>
         </div>
       </div>
@@ -245,63 +328,158 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
     )
   }
 
+  // Ensure settings are loaded
+  if (mapSettings === null && typeof window !== 'undefined') {
+    const saved = localStorage.getItem('mapSettings')
+    if (saved) {
+      try {
+        const loaded = JSON.parse(saved)
+        if (loaded) {
+          setTimeout(() => {
+            setMapSettings(loaded)
+          }, 0)
+        }
+      } catch (e) {
+        // Invalid JSON, continue with null
+      }
+    }
+  }
+
   return (
     <div className="h-dvh w-screen relative">
-      <Map
-        mapboxAccessToken={mapboxToken}
-        initialViewState={{
-          longitude: location.lng,
-          latitude: location.lat,
-          zoom: 15,
+      <GoogleMapWrapper
+        key={JSON.stringify(mapSettings)} // Force remount when settings change
+        center={{ lat: location.lat, lng: location.lng }}
+        zoom={mapSettings?.zoom || 15}
+        onLoad={(map) => {
+          setMapReady(true)
         }}
-        style={{ width: '100%', height: '100%' }}
-        mapStyle="mapbox://styles/mapbox/dark-v10"
-        onLoad={() => setMapReady(true)}
-        onError={(e) => {
-          console.error('Map error:', e)
-          setMapError('Failed to load map. Please check your Mapbox token.')
+        onError={(error) => {
+          console.error('Map error:', error)
+          setMapError('Failed to load map. Please check your Google Maps API key.')
         }}
-        reuseMaps
-        dragRotate={false}
-        dragPan={true}
-      >
-        <Marker longitude={location.lng} latitude={location.lat}>
-          <div className="w-6 h-6 bg-red-500 rounded-full border-2 border-white shadow-lg"></div>
-        </Marker>
-        {showHiderLocation && currentGame.hiderLocation && (
-          <Marker
-            longitude={currentGame.hiderLocation.lng}
-            latitude={currentGame.hiderLocation.lat}
-          >
-            <div className="w-8 h-8 bg-green-500 rounded-full border-4 border-yellow-400 shadow-2xl animate-pulse"></div>
-          </Marker>
-        )}
-      </Map>
+        seekerLocations={location ? { seeker: location } : {}}
+        hiderLocation={null}
+        showHiderLocation={false}
+        showTransitLayer={mapSettings?.showTransitLayer !== false}
+        mapTypeId={mapSettings?.mapTypeId || 'roadmap'}
+        hiderMarkerColor={mapSettings?.hiderMarkerColor}
+        seekerMarkerColor={mapSettings?.seekerMarkerColor}
+        circleColor={mapSettings?.circleColor}
+        circleOpacity={mapSettings?.circleOpacity}
+        circleStrokeOpacity={mapSettings?.circleStrokeOpacity}
+        circleStrokeWeight={mapSettings?.circleStrokeWeight}
+        circleRadiusMeters={mapSettings?.circleRadiusMeters || 500}
+        hiderMarkerSize={mapSettings?.hiderMarkerSize}
+        seekerMarkerSize={mapSettings?.seekerMarkerSize}
+        hiderMarkerStrokeColor={mapSettings?.hiderMarkerStrokeColor}
+        seekerMarkerStrokeColor={mapSettings?.seekerMarkerStrokeColor}
+        hiderMarkerStrokeWeight={mapSettings?.hiderMarkerStrokeWeight}
+        seekerMarkerStrokeWeight={mapSettings?.seekerMarkerStrokeWeight}
+        circleStrokeColor={mapSettings?.circleStrokeColor}
+        showZoomControl={mapSettings?.showZoomControl !== false}
+        showMapTypeControl={mapSettings?.showMapTypeControl}
+        showStreetViewControl={mapSettings?.showStreetViewControl}
+        showFullscreenControl={mapSettings?.showFullscreenControl}
+        showPOILabels={mapSettings?.showPOILabels}
+        showTransitLabels={mapSettings?.showTransitLabels !== false}
+        showRoadLabels={mapSettings?.showRoadLabels !== false}
+        showAdministrativeLabels={mapSettings?.showAdministrativeLabels !== false}
+        showWaterLabels={mapSettings?.showWaterLabels !== false}
+        showLandscapeLabels={mapSettings?.showLandscapeLabels !== false}
+        showTransitLines={mapSettings?.showTransitLines !== false}
+        showTransitStations={mapSettings?.showTransitStations !== false}
+        showBusStops={mapSettings?.showBusStops !== false}
+        showTramStops={mapSettings?.showTramStops !== false}
+        showSubwayStations={mapSettings?.showSubwayStations !== false}
+        showRailStations={mapSettings?.showRailStations !== false}
+        showBusLines={mapSettings?.showBusLines !== false}
+        showTramLines={mapSettings?.showTramLines !== false}
+        showSubwayLines={mapSettings?.showSubwayLines !== false}
+        showRailLines={mapSettings?.showRailLines !== false}
+        showRoads={mapSettings?.showRoads !== false}
+        showBuildings={mapSettings?.showBuildings !== false}
+        showWater={mapSettings?.showWater !== false}
+        showParks={mapSettings?.showParks !== false}
+        showHighways={mapSettings?.showHighways !== false}
+        showLocalRoads={mapSettings?.showLocalRoads !== false}
+        showArterialRoads={mapSettings?.showArterialRoads !== false}
+        darkMode={mapSettings?.darkMode}
+        minZoom={mapSettings?.minZoom}
+        maxZoom={mapSettings?.maxZoom}
+        gestureHandling={mapSettings?.gestureHandling}
+        disableDoubleClickZoom={mapSettings?.disableDoubleClickZoom}
+        disableScrollWheel={mapSettings?.disableScrollWheel}
+        draggable={mapSettings?.draggable !== false}
+        keyboardShortcuts={mapSettings?.keyboardShortcuts !== false}
+        clickableIcons={mapSettings?.clickableIcons}
+        mapLanguage={mapSettings?.mapLanguage}
+        tilt={mapSettings?.tilt}
+        heading={mapSettings?.heading}
+      />
 
-      <div className="absolute top-4 left-4 right-4 z-10 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setChatOpen(!chatOpen)}
-            className="bg-gray-900 text-white p-3 rounded-lg shadow-lg hover:bg-gray-800 transition-colors relative"
-          >
-            <MessageSquare className="w-6 h-6" />
-            {currentGame.chatMessages && currentGame.chatMessages.length > 0 && (
-              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                {currentGame.chatMessages.length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setQuestionsDrawerOpen(!questionsDrawerOpen)}
-            className="bg-gray-900 text-white p-3 rounded-lg shadow-lg hover:bg-gray-800 transition-colors"
-          >
-            <HelpCircle className="w-6 h-6" />
-          </button>
+      <div className="absolute top-4 left-4 right-4 z-10 flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setChatOpen(!chatOpen)
+                if (!chatOpen) {
+                  setQuestionsDrawerOpen(false) // Close questions when opening chat
+                  setLastSeenMessageCount(currentGame.chatMessages?.length || 0) // Mark as seen
+                }
+              }}
+              className="bg-gray-900 text-white p-3 rounded-lg shadow-lg hover:bg-gray-800 transition-colors relative"
+            >
+              <MessageSquare className="w-6 h-6" />
+              {currentGame.chatMessages && currentGame.chatMessages.length > lastSeenMessageCount && (
+                <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => {
+                setQuestionsDrawerOpen(!questionsDrawerOpen)
+                if (!questionsDrawerOpen) setChatOpen(false) // Close chat when opening questions
+              }}
+              className="bg-gray-900 text-white p-3 rounded-lg shadow-lg hover:bg-gray-800 transition-colors"
+            >
+              <HelpCircle className="w-6 h-6" />
+            </button>
+          </div>
+          <div className="bg-gray-900 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 justify-center">
+            <span className="text-sm text-gray-400">Game Code:</span>
+            <span className="text-xl font-bold text-blue-400">{currentGame.code}</span>
+          </div>
         </div>
-        <div className="bg-gray-900 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 justify-center">
-          <span className="text-sm text-gray-400">Game Code:</span>
-          <span className="text-xl font-bold text-blue-400">{currentGame.code}</span>
-        </div>
+
+        {/* Active Curses - Stack underneath game code */}
+        <AnimatePresence>
+          {currentGame.activeCurses && currentGame.activeCurses.length > 0 && (
+            <div className="flex flex-col gap-2 items-end">
+              {currentGame.activeCurses.map((curse, index) => (
+                <motion.div
+                  key={curse.id}
+                  initial={{ opacity: 0, y: -20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ delay: index * 0.1 }}
+                  className="bg-red-900 border-2 border-red-500 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-3 max-w-md"
+                >
+                  <div className="flex-1">
+                    <div className="font-bold text-sm">{curse.name}</div>
+                    <div className="text-xs text-red-200">{curse.description}</div>
+                  </div>
+                  <div className="text-xs text-red-300 whitespace-nowrap">
+                    {Math.floor(curse.duration / 60)}m
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          )}
+        </AnimatePresence>
       </div>
 
       <AnimatePresence>
@@ -326,72 +504,71 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
               {currentGame.chatMessages && currentGame.chatMessages.length > 0 ? (
                 <>
                   {currentGame.chatMessages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`p-3 rounded-lg ${
-                      message.type === 'question'
+                    <div
+                      key={message.id}
+                      className={`p-3 rounded-lg ${message.type === 'question'
                         ? 'bg-blue-900/50 border border-blue-700'
                         : message.type === 'answer'
-                        ? 'bg-green-900/50 border border-green-700'
-                        : message.type === 'photo'
-                        ? 'bg-yellow-900/50 border border-yellow-700'
-                        : 'bg-gray-800'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-semibold text-gray-400">
-                        {message.sender === 'hider' ? 'Hider' : 'Seeker'}
-                      </span>
-                      <span className="text-xs text-gray-500">
-                        {message.timestamp?.toDate
-                          ? new Date(message.timestamp.toDate()).toLocaleTimeString()
-                          : new Date(message.timestamp).toLocaleTimeString()}
-                      </span>
-                    </div>
-                    {message.type === 'question' && (
-                      <div>
-                        <p className="text-xs text-blue-300 mb-1">{message.category}</p>
-                        <p className="text-sm font-medium">{message.question}</p>
+                          ? 'bg-green-900/50 border border-green-700'
+                          : message.type === 'photo'
+                            ? 'bg-yellow-900/50 border border-yellow-700'
+                            : 'bg-gray-800'
+                        }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-semibold text-gray-400">
+                          {message.sender === 'hider' ? 'Hider' : 'Seeker'}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {message.timestamp?.toDate
+                            ? new Date(message.timestamp.toDate()).toLocaleTimeString()
+                            : new Date(message.timestamp).toLocaleTimeString()}
+                        </span>
                       </div>
-                    )}
-                    {message.type === 'answer' && (
-                      <div>
-                        <p className="text-xs text-gray-400 mb-1 line-through">{message.question}</p>
-                        <p className="text-sm font-medium">
-                          {message.content.includes('Correct') ? (
-                            <span className="text-green-400">{message.content}</span>
-                          ) : (
-                            <span className="text-red-400">{message.content}</span>
+                      {message.type === 'question' && (
+                        <div>
+                          <p className="text-xs text-blue-300 mb-1">{message.category}</p>
+                          <p className="text-sm font-medium">{message.question}</p>
+                        </div>
+                      )}
+                      {message.type === 'answer' && (
+                        <div>
+                          <p className="text-xs text-gray-400 mb-1 line-through">{message.question}</p>
+                          <p className="text-sm font-medium">
+                            {message.content.includes('Yes') || message.content.includes('✓') ? (
+                              <span className="text-green-400">{message.content}</span>
+                            ) : (
+                              <span className="text-red-400">{message.content}</span>
+                            )}
+                          </p>
+                          {message.photoUrl && (
+                            <div className="mt-2">
+                              <img
+                                src={message.photoUrl}
+                                alt="Answer photo"
+                                className="w-full rounded-lg max-h-48 object-cover"
+                              />
+                            </div>
                           )}
-                        </p>
-                        {message.photoUrl && (
-                          <div className="mt-2">
-                            <img 
-                              src={message.photoUrl} 
-                              alt="Answer photo" 
-                              className="w-full rounded-lg max-h-48 object-cover"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {message.type === 'photo' && (
-                      <div>
-                        <p className="text-xs text-yellow-300 mb-1">Photo Question: {message.question}</p>
-                        {message.photoUrl ? (
-                          <div className="mt-2">
-                            <img 
-                              src={message.photoUrl} 
-                              alt="Hider's photo" 
-                              className="w-full rounded-lg max-h-64 object-cover"
-                            />
-                          </div>
-                        ) : (
-                          <p className="text-sm text-gray-400">Photo pending...</p>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                        </div>
+                      )}
+                      {message.type === 'photo' && (
+                        <div>
+                          <p className="text-xs text-yellow-300 mb-1">Photo Question: {message.question}</p>
+                          {message.photoUrl ? (
+                            <div className="mt-2">
+                              <img
+                                src={message.photoUrl}
+                                alt="Hider's photo"
+                                className="w-full rounded-lg max-h-64 object-cover"
+                              />
+                            </div>
+                          ) : (
+                            <p className="text-sm text-gray-400">Photo pending...</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   ))}
                   <div ref={chatEndRef} />
                 </>
@@ -443,14 +620,13 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
                     Go to Seed Page
                   </a>
                 </div>
-              ) : (
+              ) : !selectedCategory ? (
                 <div className="space-y-2">
                   {getCategories().map((category) => (
                     <button
                       key={category}
                       onClick={() => {
-                        sendQuestionRequest(category)
-                        setQuestionsDrawerOpen(false)
+                        setSelectedCategory(category)
                       }}
                       className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors text-left"
                     >
@@ -458,31 +634,45 @@ export default function SeekerInterface({ game }: SeekerInterfaceProps) {
                     </button>
                   ))}
                 </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 mb-4">
+                    <button
+                      onClick={() => {
+                        setSelectedCategory(null)
+                        setSelectedQuestion(null)
+                      }}
+                      className="p-2 hover:bg-gray-800 rounded-lg"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                    <h3 className="text-xl font-bold">{selectedCategory}</h3>
+                  </div>
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {availableQuestions
+                      .filter((q) => {
+                        // Filter by category
+                        if (q.category !== selectedCategory) return false
+                        return true
+                      })
+                      .map((question) => (
+                        <button
+                          key={question.id}
+                          onClick={() => sendQuestionRequest(question)}
+                          className="w-full bg-gray-800 hover:bg-gray-700 text-white font-medium py-3 px-4 rounded-lg transition-colors text-left border border-gray-700"
+                        >
+                          <p className="text-sm">{question.question}</p>
+                          {question.drawCards && question.keepCards && (
+                            <p className="text-xs text-gray-400 mt-1">
+                              Draw {question.drawCards}, Keep {question.keepCards}
+                            </p>
+                          )}
+                        </button>
+                      ))}
+                  </div>
+                </div>
               )}
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {activeCurse && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black bg-opacity-90 z-30 flex items-center justify-center"
-          >
-            <motion.div
-              initial={{ scale: 0.8 }}
-              animate={{ scale: 1 }}
-              className="bg-gray-900 text-white p-8 rounded-2xl max-w-md mx-4 text-center"
-            >
-              <h2 className="text-3xl font-bold mb-4 text-red-500">{activeCurse.name}</h2>
-              <p className="text-lg mb-4">{activeCurse.description}</p>
-              <p className="text-sm text-gray-400">
-                Duration: {activeCurse.duration} {activeCurse.duration === 1 ? 'minute' : 'minutes'}
-              </p>
-            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

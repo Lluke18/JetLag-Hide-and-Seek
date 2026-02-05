@@ -1,1 +1,1 @@
-self.__REACT_LOADABLE_MANIFEST='{"node_modules\\\\react-map-gl\\\\dist\\\\esm\\\\exports-mapbox.js -> mapbox-gl":{"id":2520,"files":["static/chunks/c36f3faa.b55ecc3b108503ab.js"]}}';
+self.__REACT_LOADABLE_MANIFEST="{}";

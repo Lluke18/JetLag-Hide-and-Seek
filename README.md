@@ -19,9 +19,10 @@ A real-time Hide and Seek Progressive Web App built with Next.js and Firebase.
    - Navigate to `http://localhost:3000/admin/seed`
    - Click "Seed All Collections"
 
-4. **Add Mapbox token:**
-   - Get token from [Mapbox](https://account.mapbox.com/access-tokens/)
-   - Add to `.env.local`: `NEXT_PUBLIC_MAPBOX_TOKEN=your_token`
+4. **Add Google Maps API key:**
+   - Get API key from [Google Cloud Console](https://console.cloud.google.com/google/maps-apis)
+   - Enable "Maps JavaScript API" and "Places API" (for transit/subway data)
+   - Add to `.env.local`: `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=your_api_key`
 
 5. **Add PWA icons (optional):**
    - Create `public/icon-192.png` (192x192 pixels)

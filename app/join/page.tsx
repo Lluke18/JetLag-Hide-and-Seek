@@ -51,12 +51,12 @@ export default function JoinPage() {
         status: 'waiting',
         totalHidingTime: 0,
         activeCurses: [],
-        coins: 0,
         hiderLocation: null,
         seekerLocations: {},
         gameSize,
         hidingZoneRadius,
         hidingPeriodEndsAt,
+        hiderDeck: [],
       })
       router.push(`/game?id=${gameRef.id}`)
     } catch (error: any) {

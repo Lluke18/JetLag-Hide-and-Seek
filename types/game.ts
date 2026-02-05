@@ -7,7 +7,6 @@ export interface Game {
   status: 'waiting' | 'active' | 'hidingPeriod' | 'ended' | 'endGame'
   totalHidingTime: number
   activeCurses: Curse[]
-  coins: number
   hiderLocation: {
     lat: number
     lng: number
@@ -28,6 +27,8 @@ export interface Game {
   hidingPeriodEndsAt?: any
   hidingZoneRadius?: number // in meters
   chatMessages?: ChatMessage[]
+  hiderDeck?: Card[] // Hider's deck (max 6 cards)
+  usedQuestionIds?: string[] // IDs of questions already asked
 }
 
 export interface ChatMessage {
@@ -54,8 +55,15 @@ export interface Card {
   type: 'timeBonus' | 'curse' | 'powerup'
   name: string
   description: string
-  value?: number
-  effect?: string
+  value?: number // Legacy field, still used for curses and simple effects
+  effect?: string // For powerup effects
+  // Time bonus specific fields
+  color?: string // Color tier: red, orange, yellow, green, blue
+  smallValue?: number // Time bonus for small games (in seconds)
+  mediumValue?: number // Time bonus for medium games (in seconds)
+  largeValue?: number // Time bonus for large games (in seconds)
+  // Curse specific fields
+  curseEffect?: string // Describes the curse effect
 }
 
 export interface Question {
@@ -67,4 +75,5 @@ export interface Question {
   drawCards?: number // number of cards to draw
   keepCards?: number // number of cards to keep
   timeLimit?: number // time limit in seconds (300 for normal, 600-1200 for photos)
+  gameSize?: string // 'all', 'medium,large', 'large', etc.
 }

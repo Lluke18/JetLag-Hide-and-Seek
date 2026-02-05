@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { seedDeck, seedQuestions, seedAll } from '@/scripts/seed-data-client'
+import { seedDeck, seedQuestions, seedAll } from '@/scripts/seed-comprehensive-client'
 import { CheckCircle2, XCircle, Loader2, Database } from 'lucide-react'
 import Link from 'next/link'
 
@@ -52,6 +52,14 @@ export default function SeedPage() {
           Manage Questions (CRUD)
         </Link>
 
+        <Link
+          href="/admin/deck"
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+        >
+          <Database className="w-5 h-5" />
+          Manage Deck (CRUD)
+        </Link>
+
         <div className="space-y-4">
           <button
             onClick={handleSeedDeck}
@@ -99,7 +107,7 @@ export default function SeedPage() {
 
         <div className="mt-6 p-4 bg-gray-800 rounded-lg">
           <p className="text-sm text-gray-400">
-            <strong>Note:</strong> Make sure you have proper Firestore permissions set up. 
+            <strong>Note:</strong> Make sure you have proper Firestore permissions set up.
             This page will only work if your security rules allow writes to the deck and questions collections.
           </p>
         </div>
