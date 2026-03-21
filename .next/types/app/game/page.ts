@@ -1,4 +1,4 @@
-// File: D:\Projects\JetLag-Hide-and-Seek\app\game\page.tsx
+// File: D:\_WebApps\JetLag-Hide-and-Seek\app\game\page.tsx
 import * as entry from '../../../../app/game/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

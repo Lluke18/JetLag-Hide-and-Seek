@@ -20,6 +20,7 @@ const nextConfig = {
   trailingSlash: true,
   // Skip dynamic route validation for static export
   skipTrailingSlashRedirect: true,
+  outputFileTracing: false,
 }
 
 module.exports = withPWA(nextConfig)

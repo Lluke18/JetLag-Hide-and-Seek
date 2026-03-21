@@ -1,7 +1,8 @@
 'use client'
 
-import { useMemo, useCallback, useEffect, useRef } from 'react'
-import { GoogleMap, Circle, Marker, useJsApiLoader, Polyline } from '@react-google-maps/api'
+import React, { useMemo, useCallback, useEffect, useRef, useState } from 'react'
+import { GoogleMap, Circle, Marker, useJsApiLoader, Polyline, Polygon, Rectangle, InfoWindow } from '@react-google-maps/api'
+import { POIMarker } from '@/types/game'
 
 interface GoogleMapWrapperProps {
   center: { lat: number; lng: number }
@@ -83,9 +84,22 @@ interface GoogleMapWrapperProps {
   mapLanguage?: string
   tilt?: number
   heading?: number
+  radarCircle?: {
+    center: { lat: number; lng: number }
+    radiusMeters: number
+  }
+  fixedCircleCenter?: { lat: number; lng: number } // locked hiding zone center
+  gameArea?: {
+    center: { lat: number; lng: number }
+    radiusMeters: number
+  }
+  restrictedAreas?: { center: { lat: number; lng: number }; radius: number }[]
+  thermometerZones?: { point1: { lat: number; lng: number }; point2: { lat: number; lng: number }; isHotter: boolean }[]
+  isHider?: boolean
+  poiMarkers?: POIMarker[]
 }
 
-const libraries: ('drawing' | 'geometry' | 'places' | 'visualization')[] = ['drawing', 'geometry']
+const libraries: ('drawing' | 'geometry' | 'places' | 'visualization')[] = ['drawing', 'geometry', 'places']
 
 export default function GoogleMapWrapper({
   center,
@@ -145,7 +159,7 @@ export default function GoogleMapWrapper({
   darkMode = false,
   minZoom = 1,
   maxZoom = 20,
-  gestureHandling = 'auto',
+  gestureHandling = 'greedy',
   disableDoubleClickZoom = false,
   disableScrollWheel = false,
   draggable = true,
@@ -156,6 +170,13 @@ export default function GoogleMapWrapper({
   mapLanguage = 'en',
   tilt = 0,
   heading = 0,
+  radarCircle,
+  fixedCircleCenter,
+  gameArea,
+  restrictedAreas = [],
+  thermometerZones = [],
+  isHider = false,
+  poiMarkers = [],
 }: GoogleMapWrapperProps) {
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ''
 
@@ -163,11 +184,16 @@ export default function GoogleMapWrapper({
     id: 'google-map-script',
     googleMapsApiKey: googleMapsApiKey,
     libraries: libraries,
+    language: mapLanguage,
   })
+
+  const [mapInstance, setMapInstance] = useState<google.maps.Map | null>(null)
+  const transitLayerRef = useRef<google.maps.TransitLayer | null>(null)
+  const [selectedPoiName, setSelectedPoiName] = useState<{ name: string, location: { lat: number, lng: number } } | null>(null)
 
   const mapOptions = useMemo<google.maps.MapOptions>(() => {
     const baseStyles: google.maps.MapTypeStyle[] = customStyles || []
-    
+
     // Add POI label visibility
     if (!customStyles) {
       baseStyles.push({
@@ -201,7 +227,7 @@ export default function GoogleMapWrapper({
       // - transit.station.rail can hide rail/subway stations
       // - Bus stops and tram stops are part of transit.station but can't be easily separated
       // - The TransitLayer shows all transit features, and we can't filter by type
-      
+
       if (!showTransitStations) {
         // Hide all transit stations
         baseStyles.push({
@@ -224,7 +250,7 @@ export default function GoogleMapWrapper({
             // Can't selectively hide just rail, so we show rail if subway is enabled
           }
         }
-        
+
         // For bus/tram stops: Google Maps doesn't provide separate feature types
         // If both bus and tram stops are disabled, we could hide all transit.station
         // but that would also hide subway stations, so we can't do that
@@ -424,19 +450,130 @@ export default function GoogleMapWrapper({
     heading,
   ])
 
+  // Compute the Game Area outline (an immense polygon that shades EVERYTHING outside the game area)
+  // We do this by creating an outer boundary that covers the world, and an inner "hole" for the game area
+  const gameAreaPaths = useMemo(() => {
+    if (!gameArea || !isLoaded || !window.google?.maps?.geometry) return null
+
+    // Outer bound (localized box to avoid globe-spanning issues, clockwise)
+    // 2 degrees is roughly 220km, plenty large to cover the view.
+    const boundsOffset = 2
+    const lat = gameArea.center.lat
+    const lng = gameArea.center.lng
+    const worldBounds = [
+      { lat: lat + boundsOffset, lng: lng - boundsOffset }, // NW
+      { lat: lat + boundsOffset, lng: lng + boundsOffset }, // NE
+      { lat: lat - boundsOffset, lng: lng + boundsOffset }, // SE
+      { lat: lat - boundsOffset, lng: lng - boundsOffset }, // SW
+    ]
+
+    // Inner bound (the game area circle, counter-clockwise to create a hole)
+    const circlePoints = []
+    const pointsCount = 64
+    for (let i = pointsCount; i >= 0; i--) {
+      const hdg = (i * 360) / pointsCount
+      const point = google.maps.geometry.spherical.computeOffset(
+        new google.maps.LatLng(gameArea.center.lat, gameArea.center.lng),
+        gameArea.radiusMeters,
+        hdg
+      )
+      circlePoints.push({ lat: point.lat(), lng: point.lng() })
+    }
+
+    return [worldBounds, circlePoints]
+  }, [gameArea, isLoaded])
+
+  // Inverted target for Hider's hiding zone
+  const hidingZonePaths = useMemo(() => {
+    if (!isLoaded || !window.google || !isHider || (!fixedCircleCenter && !hiderLocation)) return null
+
+    const center = fixedCircleCenter || hiderLocation!
+
+    // Outer bounds
+    const boundsOffset = 1.0 // ~111km
+    const lat = center.lat
+    const lng = center.lng
+    const worldBounds = [
+      { lat: lat + boundsOffset, lng: lng - boundsOffset }, // NW
+      { lat: lat + boundsOffset, lng: lng + boundsOffset }, // NE
+      { lat: lat - boundsOffset, lng: lng + boundsOffset }, // SE
+      { lat: lat - boundsOffset, lng: lng - boundsOffset }, // SW
+    ]
+
+    // Inner bound counter-clockwise
+    const circlePoints = []
+    const pointsCount = 64
+    for (let i = pointsCount; i >= 0; i--) {
+      const hdg = (i * 360) / pointsCount
+      const point = window.google.maps.geometry.spherical.computeOffset(
+        new window.google.maps.LatLng(center.lat, center.lng),
+        circleRadiusMeters,
+        hdg
+      )
+      circlePoints.push({ lat: point.lat(), lng: point.lng() })
+    }
+
+    return [worldBounds, circlePoints]
+  }, [fixedCircleCenter, hiderLocation, circleRadiusMeters, isLoaded, isHider])
+
+  // Compute Thermometer shaded regions (half-planes)
+  const thermometerPolygons = useMemo(() => {
+    if (!isLoaded || !window.google || !thermometerZones.length) return []
+
+    return thermometerZones.map(zone => {
+      // Shaded half is the side where the hider is NOT.
+      // If "isHotter" is true, the hider is on the point2 side. So shade point1 side.
+      // If "isHotter" is false, the hider is on the point1 side. So shade point2 side.
+      const p1 = new window.google.maps.LatLng(zone.point1.lat, zone.point1.lng)
+      const p2 = new window.google.maps.LatLng(zone.point2.lat, zone.point2.lng)
+
+      const midpoint = window.google.maps.geometry.spherical.interpolate(p1, p2, 0.5)
+      const heading = window.google.maps.geometry.spherical.computeHeading(p1, p2)
+
+      // The perpendicular line passes through the midpoint and has heading +90 and -90
+      // We want to project exactly away from the midpoint into the 'cold' side
+
+      // If isHotter, hider is towards p2. Cold side is backwards from midpoint (heading + 180).
+      // If NOT isHotter, hider is towards p1. Cold side is forwards from midpoint (heading).
+      const coldDirection = zone.isHotter ? heading + 180 : heading
+
+      // Draw a rectangle shading that half of the game map
+      const BIG_DIST = 200000 // 200 km, large enough for any game zone but prevents globe-wrapping distortion
+
+      const leftMid = window.google.maps.geometry.spherical.computeOffset(midpoint, BIG_DIST, coldDirection - 90)
+      const rightMid = window.google.maps.geometry.spherical.computeOffset(midpoint, BIG_DIST, coldDirection + 90)
+
+      const farLeft = window.google.maps.geometry.spherical.computeOffset(leftMid, BIG_DIST, coldDirection)
+      const farRight = window.google.maps.geometry.spherical.computeOffset(rightMid, BIG_DIST, coldDirection)
+
+      return [midpoint, rightMid, farRight, farLeft, leftMid, midpoint].map(ll => ({ lat: ll.lat(), lng: ll.lng() }))
+    })
+  }, [thermometerZones, isLoaded])
+
   const onMapLoad = useCallback(
     (map: google.maps.Map) => {
-      // Enable transit layer if requested
-      if (showTransitLayer) {
-        const transitLayer = new google.maps.TransitLayer()
-        transitLayer.setMap(map)
-      }
+      setMapInstance(map)
       if (onLoad) {
         onLoad(map)
       }
     },
-    [onLoad, showTransitLayer]
+    [onLoad]
   )
+
+  useEffect(() => {
+    if (!mapInstance || !isLoaded || !window.google?.maps) return
+
+    if (showTransitLayer) {
+      if (!transitLayerRef.current) {
+        transitLayerRef.current = new google.maps.TransitLayer()
+      }
+      transitLayerRef.current.setMap(mapInstance)
+    } else {
+      if (transitLayerRef.current) {
+        transitLayerRef.current.setMap(null)
+      }
+    }
+  }, [mapInstance, isLoaded, showTransitLayer])
 
   if (loadError) {
     if (onError) {
@@ -482,7 +619,7 @@ export default function GoogleMapWrapper({
       onLoad={onMapLoad}
     >
       {children}
-      
+
       {/* Hider location marker */}
       {hiderLocation && (
         <Marker
@@ -530,10 +667,10 @@ export default function GoogleMapWrapper({
         />
       )}
 
-      {/* Hiding zone circle */}
-      {hiderLocation && (
+      {/* Hiding zone circle — fixed after travel phase, live during travel */}
+      {(fixedCircleCenter || hiderLocation) && !isHider && (
         <Circle
-          center={hiderLocation}
+          center={fixedCircleCenter || hiderLocation!}
           radius={circleRadiusMeters}
           options={{
             fillColor: circleColor,
@@ -544,6 +681,83 @@ export default function GoogleMapWrapper({
           }}
         />
       )}
+
+      {/* Hiding zone inverted contour (for Hider only) */}
+      {(fixedCircleCenter || hiderLocation) && isHider && hidingZonePaths && (
+        <Polygon
+          paths={hidingZonePaths}
+          options={{
+            fillColor: circleColor,
+            fillOpacity: circleOpacity,
+            strokeColor: circleStrokeColor,
+            strokeOpacity: circleStrokeOpacity,
+            strokeWeight: circleStrokeWeight,
+            clickable: false
+          }}
+        />
+      )}
+
+      {/* Game area inverted contour */}
+      {gameAreaPaths && (
+        <Polygon
+          paths={gameAreaPaths}
+          options={{
+            fillColor: '#000000',
+            fillOpacity: 0.3,
+            strokeColor: '#ef4444',
+            strokeWeight: 3,
+            strokeOpacity: 0.8,
+            clickable: false
+          }}
+        />
+      )}
+
+      {/* Thermometer Zones */}
+      {thermometerPolygons.map((path, idx) => (
+        <Polygon
+          key={`thermometer-${idx}`}
+          paths={path}
+          options={{
+            fillColor: '#b91c1c', // red-700
+            fillOpacity: 0.15,
+            strokeColor: '#ef4444', // red-500
+            strokeWeight: 2,
+            strokeOpacity: 0.6,
+            clickable: false
+          }}
+        />
+      ))}
+
+      {/* Radar question circle — centered on asking seeker */}
+      {radarCircle && (
+        <Circle
+          center={radarCircle.center}
+          radius={radarCircle.radiusMeters}
+          options={{
+            fillColor: '#06b6d4',
+            fillOpacity: 0.08,
+            strokeColor: '#06b6d4',
+            strokeOpacity: 0.8,
+            strokeWeight: 2,
+          }}
+        />
+      )}
+
+      {/* Restricted Areas (from answered 'No' radar questions) */}
+      {restrictedAreas.map((area, idx) => (
+        <Circle
+          key={`restricted-${idx}`}
+          center={area.center}
+          radius={area.radius}
+          options={{
+            fillColor: '#ef4444',
+            fillOpacity: 0.15,
+            strokeColor: '#ef4444',
+            strokeOpacity: 0.5,
+            strokeWeight: 2,
+          }}
+        />
+      ))}
 
       {/* Subway lines */}
       {subwayLines.map((line) => {
@@ -578,6 +792,107 @@ export default function GoogleMapWrapper({
           title={station.name}
         />
       ))}
+
+      {/* Target POIs for Seekers relative to matching/measuring questions */}
+      {poiMarkers.map((poi) => {
+        if (poi.type === 'area' && poi.bounds) {
+          return (
+            <Rectangle
+              key={poi.id}
+              bounds={poi.bounds}
+              options={{
+                fillColor: '#d946ef', // fuchsia-500
+                fillOpacity: 0.3,
+                strokeColor: '#d946ef',
+                strokeOpacity: 0.9,
+                strokeWeight: 3,
+                clickable: false,
+                zIndex: 50,
+              }}
+            />
+          )
+        } else if (poi.type === 'point' && poi.center) {
+          return (
+            <Marker
+              key={poi.id}
+              position={poi.center}
+              icon={{
+                url: 'http://maps.google.com/mapfiles/ms/icons/purple-dot.png',
+                scaledSize: window.google ? new window.google.maps.Size(32, 32) : undefined
+              }}
+              zIndex={50}
+              title={poi.name || 'Target POI'}
+              onClick={() => setSelectedPoiName({ name: poi.name || 'Target POI', location: poi.center! })}
+            />
+          )
+        } else if (poi.type === 'measuring_circles' && poi.circles) {
+          const isFurther = poi.answerStatus === 'FURTHER';
+          const circleColor = isFurther ? '#ef4444' : '#22c55e'; // red-500 or green-500
+
+          return (
+            <React.Fragment key={poi.id}>
+              {poi.circles.map((circle, idx) => (
+                <Circle
+                  key={`circle-${poi.id}-${idx}`}
+                  center={circle.center}
+                  radius={circle.radius}
+                  options={{
+                    fillColor: circleColor,
+                    fillOpacity: 0.3,
+                    strokeColor: circleColor,
+                    strokeOpacity: 0.8,
+                    strokeWeight: 2,
+                    clickable: false,
+                    zIndex: 45,
+                  }}
+                />
+              ))}
+            </React.Fragment>
+          )
+        } else if (poi.type === 'matching_points' && poi.points) {
+          const isNo = poi.answerStatus === 'NO';
+
+          return (
+            <React.Fragment key={poi.id}>
+              {poi.points.map((pt, idx) => {
+                const pinUrl = (isNo || !pt.isMatch)
+                  ? 'http://maps.google.com/mapfiles/ms/icons/red-dot.png'
+                  : 'http://maps.google.com/mapfiles/ms/icons/green-dot.png';
+
+                return (
+                  <Marker
+                    key={`match-${poi.id}-${idx}`}
+                    position={pt.center}
+                    icon={{
+                      url: pinUrl,
+                      scaledSize: window.google ? new window.google.maps.Size(40, 40) : undefined
+                    }}
+                    zIndex={50}
+                    title={pt.name}
+                    onClick={() => setSelectedPoiName({ name: pt.name || 'Target', location: pt.center })}
+                  />
+                )
+              })}
+            </React.Fragment>
+          )
+        }
+        return null
+      })}
+
+      {/* InfoWindow for clicked POIs */}
+      {selectedPoiName && (
+        <InfoWindow
+          position={selectedPoiName.location}
+          onCloseClick={() => setSelectedPoiName(null)}
+          options={{
+            pixelOffset: window.google ? new window.google.maps.Size(0, -32) : undefined
+          }}
+        >
+          <div className="p-1 text-gray-900 font-bold max-w-xs text-sm">
+            {selectedPoiName.name}
+          </div>
+        </InfoWindow>
+      )}
     </GoogleMap>
   )
 }
