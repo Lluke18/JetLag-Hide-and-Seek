@@ -1,0 +1,11 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/admin/deck/page": "app/admin/deck/page.js",
+  "/admin/dev/page": "app/admin/dev/page.js",
+  "/admin/modes/page": "app/admin/modes/page.js",
+  "/admin/questions/page": "app/admin/questions/page.js",
+  "/admin/seed/page": "app/admin/seed/page.js",
+  "/game/page": "app/game/page.js",
+  "/join/page": "app/join/page.js",
+  "/page": "app/page.js"
+}

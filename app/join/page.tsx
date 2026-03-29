@@ -2,18 +2,23 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { collection, query, where, getDocs, addDoc, doc, getDoc } from 'firebase/firestore'
+import { collection, query, where, getDocs, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { Gamepad2, Plus, AlertCircle } from 'lucide-react'
 
 export default function JoinPage() {
   const [code, setCode] = useState('')
+  const [playerName, setPlayerName] = useState('')
   const [loading, setLoading] = useState(false)
   const [firebaseError, setFirebaseError] = useState<string | null>(null)
-  const [gameSize, setGameSize] = useState<'small' | 'medium' | 'large'>('medium')
   const router = useRouter()
 
+  // Load saved name from localStorage
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('playerName')
+      if (saved) setPlayerName(saved)
+    }
     if (!db) {
       setFirebaseError('Firebase is not configured. Please check your .env.local file.')
     }
@@ -23,42 +28,41 @@ export default function JoinPage() {
     return Math.floor(1000 + Math.random() * 9000).toString()
   }
 
+  const saveName = () => {
+    if (typeof window !== 'undefined' && playerName.trim()) {
+      localStorage.setItem('playerName', playerName.trim())
+    }
+  }
+
   const createGame = async () => {
+    if (!playerName.trim()) return
     if (!db) {
       setFirebaseError('Firebase is not configured. Please check your .env.local file.')
       return
     }
-    
+
     setLoading(true)
     setFirebaseError(null)
+    saveName()
     try {
       const gameCode = generateCode()
-      
-      // Calculate hiding zone radius based on game size
-      // Small/Medium: 0.25 mile = 402.336 meters
-      // Large: 0.5 mile = 804.672 meters
-      const hidingZoneRadius = gameSize === 'large' ? 804.672 : 402.336
-      
-      // Calculate hiding period end time
-      const hidingPeriodMinutes = gameSize === 'small' ? 30 : gameSize === 'medium' ? 60 : 180
-      const hidingPeriodEndsAt = new Date(Date.now() + hidingPeriodMinutes * 60 * 1000)
-      
+
       const gameRef = await addDoc(collection(db, 'games'), {
         code: gameCode,
         createdAt: new Date(),
         hider: null,
         seekers: [],
-        status: 'waiting',
+        status: 'lobby',
         totalHidingTime: 0,
         activeCurses: [],
-        coins: 0,
         hiderLocation: null,
         seekerLocations: {},
-        gameSize,
-        hidingZoneRadius,
-        hidingPeriodEndsAt,
+        gameSize: 'medium',
+        hidingZoneRadius: 402.336,
+        hiderDeck: [],
+        players: {},
       })
-      router.push(`/game?id=${gameRef.id}`)
+      router.push(`/game?id=${gameRef.id}&name=${encodeURIComponent(playerName.trim())}`)
     } catch (error: any) {
       console.error('Error creating game:', error)
       setFirebaseError(error.message || 'Failed to create game. Please check your Firebase configuration.')
@@ -67,19 +71,20 @@ export default function JoinPage() {
   }
 
   const joinGame = async () => {
-    if (code.length !== 4) return
+    if (code.length !== 4 || !playerName.trim()) return
     if (!db) {
       setFirebaseError('Firebase is not configured. Please check your .env.local file.')
       return
     }
-    
+
     setLoading(true)
     setFirebaseError(null)
+    saveName()
     try {
       const gamesRef = collection(db, 'games')
       const q = query(gamesRef, where('code', '==', code))
       const querySnapshot = await getDocs(q)
-      
+
       if (querySnapshot.empty) {
         setFirebaseError('Game not found')
         setLoading(false)
@@ -88,14 +93,14 @@ export default function JoinPage() {
 
       const gameDoc = querySnapshot.docs[0]
       const gameData = gameDoc.data()
-      
-      if (gameData.status !== 'waiting' && gameData.status !== 'active') {
+
+      if (gameData.status !== 'lobby' && gameData.status !== 'waiting' && gameData.status !== 'active') {
         setFirebaseError('Game is not available')
         setLoading(false)
         return
       }
 
-      router.push(`/game?id=${gameDoc.id}`)
+      router.push(`/game?id=${gameDoc.id}&name=${encodeURIComponent(playerName.trim())}`)
     } catch (error: any) {
       console.error('Error joining game:', error)
       setFirebaseError(error.message || 'Failed to join game. Please check your Firebase configuration.')
@@ -125,49 +130,23 @@ export default function JoinPage() {
           </div>
         )}
 
-        <div className="space-y-4">
-          <div className="bg-gray-800 rounded-lg p-4 space-y-3">
-            <label className="text-sm font-semibold text-gray-300">Game Size</label>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                onClick={() => setGameSize('small')}
-                className={`py-2 px-3 rounded-lg font-semibold transition-colors ${
-                  gameSize === 'small'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                }`}
-              >
-                Small
-                <div className="text-xs mt-1 opacity-75">4-8 hrs</div>
-              </button>
-              <button
-                onClick={() => setGameSize('medium')}
-                className={`py-2 px-3 rounded-lg font-semibold transition-colors ${
-                  gameSize === 'medium'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                }`}
-              >
-                Medium
-                <div className="text-xs mt-1 opacity-75">1 day</div>
-              </button>
-              <button
-                onClick={() => setGameSize('large')}
-                className={`py-2 px-3 rounded-lg font-semibold transition-colors ${
-                  gameSize === 'large'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                }`}
-              >
-                Large
-                <div className="text-xs mt-1 opacity-75">2-4 days</div>
-              </button>
-            </div>
-          </div>
+        {/* Player Name */}
+        <div className="space-y-2">
+          <label className="text-sm font-semibold text-gray-300">Your Name</label>
+          <input
+            type="text"
+            value={playerName}
+            onChange={(e) => setPlayerName(e.target.value)}
+            placeholder="Enter your name"
+            maxLength={20}
+            className="w-full bg-gray-800 text-white text-lg font-semibold py-3 px-4 rounded-lg border-2 border-gray-700 focus:border-blue-500 focus:outline-none"
+          />
+        </div>
 
+        <div className="space-y-4">
           <button
             onClick={createGame}
-            disabled={loading}
+            disabled={loading || !playerName.trim()}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-6 rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             <Plus className="w-5 h-5" />
@@ -195,7 +174,7 @@ export default function JoinPage() {
             />
             <button
               onClick={joinGame}
-              disabled={loading || code.length !== 4}
+              disabled={loading || code.length !== 4 || !playerName.trim()}
               className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-4 px-6 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Join Game

@@ -7,19 +7,20 @@ import RoleSwitcher from '@/components/RoleSwitcher'
 function GamePageContent() {
   const searchParams = useSearchParams()
   const [gameId, setGameId] = useState<string>('')
+  const [playerName, setPlayerName] = useState<string>('')
 
   useEffect(() => {
-    // Get game ID from query parameter
     const id = searchParams?.get('id')
-    if (id) {
-      setGameId(id)
-    } else if (typeof window !== 'undefined') {
-      // Fallback: try to get from URL
+    const name = searchParams?.get('name')
+    if (id) setGameId(id)
+    if (name) setPlayerName(name)
+
+    if (!id && typeof window !== 'undefined') {
       const url = new URL(window.location.href)
       const idFromUrl = url.searchParams.get('id')
-      if (idFromUrl) {
-        setGameId(idFromUrl)
-      }
+      const nameFromUrl = url.searchParams.get('name')
+      if (idFromUrl) setGameId(idFromUrl)
+      if (nameFromUrl) setPlayerName(nameFromUrl)
     }
   }, [searchParams])
 
@@ -42,7 +43,7 @@ function GamePageContent() {
     )
   }
 
-  return <RoleSwitcher gameId={gameId} />
+  return <RoleSwitcher gameId={gameId} playerName={playerName} />
 }
 
 export default function GamePage() {

@@ -1,24 +1,47 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { doc, onSnapshot, updateDoc } from 'firebase/firestore'
+import { doc, onSnapshot } from 'firebase/firestore'
 import { signInAnonymously } from 'firebase/auth'
 import { db, auth } from '@/lib/firebase'
 import { Game } from '@/types/game'
 import HiderInterface from './HiderInterface'
 import SeekerInterface from './SeekerInterface'
+import GameLobby from './GameLobby'
 import { Loader2 } from 'lucide-react'
 
 interface RoleSwitcherProps {
   gameId: string
+  playerName?: string
 }
 
-export default function RoleSwitcher({ gameId }: RoleSwitcherProps) {
+export default function RoleSwitcher({ gameId, playerName }: RoleSwitcherProps) {
   const [game, setGame] = useState<Game | null>(null)
-  const [role, setRole] = useState<'hider' | 'seeker' | null>(null)
   const [loading, setLoading] = useState(true)
   const [authError, setAuthError] = useState<string | null>(null)
   const [authReady, setAuthReady] = useState(false)
+  const [resolvedName, setResolvedName] = useState('')
+
+  // Resolve player name from prop, URL, or localStorage
+  useEffect(() => {
+    if (playerName) {
+      setResolvedName(playerName)
+      return
+    }
+    if (typeof window !== 'undefined') {
+      const urlName = new URLSearchParams(window.location.search).get('name')
+      if (urlName) {
+        setResolvedName(urlName)
+        return
+      }
+      const saved = localStorage.getItem('playerName')
+      if (saved) {
+        setResolvedName(saved)
+        return
+      }
+    }
+    setResolvedName(`Player ${Math.floor(Math.random() * 1000)}`)
+  }, [playerName])
 
   useEffect(() => {
     const initializeAuth = async () => {
@@ -43,88 +66,23 @@ export default function RoleSwitcher({ gameId }: RoleSwitcherProps) {
     initializeAuth()
   }, [])
 
-  const isSettingRoleRef = useRef(false)
-
   useEffect(() => {
     if (!gameId || !db || !auth || !authReady || authError) return
 
     const gameRef = doc(db, 'games', gameId)
-    const unsubscribe = onSnapshot(gameRef, async (snapshot) => {
+    const unsubscribe = onSnapshot(gameRef, (snapshot) => {
       if (!snapshot.exists()) {
-        setLoading(false)
-        return
-      }
-
-      if (!auth) {
         setLoading(false)
         return
       }
 
       const gameData = { id: snapshot.id, ...snapshot.data() } as Game
       setGame(gameData)
-
-      const userId = auth.currentUser?.uid
-      if (!userId) {
-        console.log('No user ID available')
-        setLoading(false)
-        return
-      }
-
-      // If role is already set and matches, don't process again
-      if (role) {
-        if (gameData.hider === userId && role === 'hider') {
-          setLoading(false)
-          return
-        }
-        if (gameData.seekers && gameData.seekers.includes(userId) && role === 'seeker') {
-          setLoading(false)
-          return
-        }
-      }
-
-      // Prevent multiple simultaneous role assignments
-      if (isSettingRoleRef.current) {
-        return
-      }
-
-      if (gameData.hider === userId) {
-        setRole('hider')
-        setLoading(false)
-      } else if (gameData.seekers && gameData.seekers.includes(userId)) {
-        setRole('seeker')
-        setLoading(false)
-      } else {
-        // User is not assigned yet, assign them
-        isSettingRoleRef.current = true
-        try {
-          if (!gameData.hider) {
-            await updateDoc(gameRef, { 
-              hider: userId,
-              status: 'active',
-            })
-            setRole('hider')
-          } else {
-            const currentSeekers = gameData.seekers || []
-            if (!currentSeekers.includes(userId)) {
-              await updateDoc(gameRef, {
-                seekers: [...currentSeekers, userId],
-                status: 'active',
-              })
-            }
-            setRole('seeker')
-          }
-          setLoading(false)
-        } catch (error) {
-          console.error('Error assigning role:', error)
-          setLoading(false)
-        } finally {
-          isSettingRoleRef.current = false
-        }
-      }
+      setLoading(false)
     })
 
     return () => unsubscribe()
-  }, [gameId, authReady, authError, role])
+  }, [gameId, authReady, authError])
 
   if (authError) {
     return (
@@ -140,13 +98,23 @@ export default function RoleSwitcher({ gameId }: RoleSwitcherProps) {
     )
   }
 
-  if (loading || !game || !role) {
+  if (loading || !game) {
     return (
       <div className="h-dvh w-screen flex items-center justify-center bg-gray-900">
         <Loader2 className="w-8 h-8 text-white animate-spin" />
       </div>
     )
   }
+
+  // Show lobby for lobby/waiting status
+  if (game.status === 'lobby' || game.status === 'waiting') {
+    return <GameLobby game={game} playerName={resolvedName} />
+  }
+
+  // Determine role from players map
+  const uid = auth?.currentUser?.uid
+  const playerEntry = uid && game.players ? game.players[uid] : null
+  const role = playerEntry?.role || (game.hider === uid ? 'hider' : 'seeker')
 
   if (role === 'hider') {
     return <HiderInterface game={game} />
